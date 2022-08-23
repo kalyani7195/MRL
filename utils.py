@@ -10,6 +10,8 @@ import math
 import numpy as np
 from imagenet_id import indices_in_1k_a, indices_in_1k_o, indices_in_1k_r
 
+import pdb; pdb.set_trace()
+
 
 def get_ckpt(path):
 	ckpt=path 
@@ -46,6 +48,153 @@ def evaluate_model(model, dataloader, show_progress_bar=True, notebook_progress_
 		return evaluate_model_ff(model, dataloader, show_progress_bar, notebook_progress_bar, tta=tta, imagenetA=imagenetA, imagenetO=imagenetO, imagenetR=imagenetR)
 	else:
 		return evaluate_model_nesting(model, dataloader, show_progress_bar=True, nesting_list=nesting_list, tta=tta, imagenetA=imagenetA, imagenetO=imagenetO, imagenetR=imagenetR)
+
+
+def evaluate_consistency(model, dataloader, show_progress_bar=True, notebook_progress_bar=False, nesting_list=None, tta=False, imagenetA=False, imagenetO=False, imagenetR=False):
+	breakpoint()
+	if nesting_list is None:
+		return evaluate_consistency_ff(model, dataloader, show_progress_bar, notebook_progress_bar, tta=tta, imagenetA=imagenetA, imagenetO=imagenetO, imagenetR=imagenetR)
+	else:
+		return evaluate_consistency_nesting(model, dataloader, show_progress_bar=True, nesting_list=nesting_list, tta=tta, imagenetA=imagenetA, imagenetO=imagenetO, imagenetR=imagenetR)
+
+
+def evaluate_consistency_ff(model, data_loader, show_progress_bar=False, notebook_progress_bar=False, tta=False, imagenetA=False, imagenetO=False, imagenetR=False):
+	
+	torch.backends.cudnn.benchmark = True
+	num_images = 0
+	predictions = []; m_score_dict={}; softmax=[]; gt=[]; all_logits=[]
+	start = timer()
+	
+	batch_time = AverageMeter()
+	consist = AverageMeter()
+	with torch.no_grad():
+		enumerable = enumerate(data_loader)
+		if show_progress_bar:
+			total = int(math.ceil(len(data_loader.dataset) / data_loader.batch_size))
+			desc = 'Batch'
+			if notebook_progress_bar:
+				enumerable = tqdm.tqdm_notebook(enumerable, total=total, desc=desc)
+			else:
+				enumerable = tqdm(enumerable, total=total, desc=desc)
+		for ii, (img_input, target) in enumerable:
+			gt.append(target)
+			unique_labels= torch.unique(target)
+			img_input = img_input.cuda(non_blocking=True)
+
+			# gene
+			off0 = np.random.randint(32,size=2)
+			off1 = np.random.randint(32,size=2)
+			output0 = model(img_input[:,:,off0[0]:off0[0]+224,off0[1]:off0[1]+224]) 
+			output1 = model(img_input[:,:,off1[0]:off1[0]+224,off1[1]:off1[1]+224])
+
+			# We have many logits here.... 
+			# Getting the margin scores...
+			if imagenetA:
+				output0 = output0[:, :, indices_in_1k_a]
+				output1 = output1[:, :, indices_in_1k_a]
+
+			elif imagenetO:
+				output0 = output0[:, :, indices_in_1k_o]
+				output1 = output1[:, :, indices_in_1k_o]
+
+			elif imagenetR:
+				output0 = output0[:, :, indices_in_1k_r]
+				output1 = output1[:, :, indices_in_1k_r]
+
+
+			cur_agree = agreement(output0, output1).type(torch.FloatTensor).to(output0.device)
+			consist.update(cur_agree.item(), img_input.size(0))
+					
+	print(' * Consistency {consist.avg:.3f}'.format(consist=consist))
+	return consist.avg
+
+
+def evaluate_consistency_nesting(model, data_loader, show_progress_bar=False, notebook_progress_bar=False, nesting_list=[2**i for i in range(3, 12)], tta=False, imagenetA= False, imagenetO=False, imagenetR=False):
+	torch.backends.cudnn.benchmark = True
+
+	num_images = 0
+	consist = {}
+	predictions = {}; m_score_dict={};softmax=[]; gt=[]; all_logits=[]
+	for i in nesting_list:
+		consist[i] = AverageMeter()
+	start = timer()
+	with torch.no_grad():
+		enumerable = enumerate(data_loader)
+		if show_progress_bar:
+			total = int(math.ceil(len(data_loader.dataset) / data_loader.batch_size))
+			desc = 'Batch'
+			if notebook_progress_bar:
+				enumerable = tqdm.tqdm_notebook(enumerable, total=total, desc=desc)
+			else:
+				enumerable = tqdm(enumerable, total=total, desc=desc)
+		for ii, (img_input, target) in enumerable:
+			gt.append(target)
+			unique_labels= torch.unique(target)
+			img_input = img_input.cuda(non_blocking=True)
+			#breakpoint()
+			logits = model(img_input); logits=torch.stack(logits, dim=0)
+
+
+			off0 = np.random.randint(32,size=2)
+			off1 = np.random.randint(32,size=2)
+			output0 = model(img_input[:,:,off0[0]:off0[0]+224,off0[1]:off0[1]+224]) ; output0=torch.stack(output0, dim=0)
+			output1 = model(img_input[:,:,off1[0]:off1[0]+224,off1[1]:off1[1]+224]) ; output1=torch.stack(output1, dim=0)
+
+			# We have many logits here.... 
+			# Getting the margin scores...
+			if imagenetA:
+				output0 = output0[:, :, indices_in_1k_a]
+				output1 = output1[:, :, indices_in_1k_a]
+
+			elif imagenetO:
+				output0 = output0[:, :, indices_in_1k_o]
+				output1 = output1[:, :, indices_in_1k_o]
+
+			elif imagenetR:
+				output0 = output0[:, :, indices_in_1k_r]
+				output1 = output1[:, :, indices_in_1k_r]
+			#breakpoint()
+			
+			for k, nesting in enumerate(nesting_list):
+				cur_agree = agreement(output0[k], output1[k]).type(torch.FloatTensor).to(output0.device)
+				consist[nesting].update(cur_agree.item(), img_input.size(0))
+
+	for nesting in nesting_list:
+		print(nesting)
+		print(' * Consistency {consist.avg:.3f}'.format(consist=consist[nesting]))
+	
+
+	end = timer()
+	print(consist)
+	print(nesting_list)
+	return consist
+
+
+def agreement(output0, output1):
+    pred0 = output0.argmax(dim=1, keepdim=False)
+    pred1 = output1.argmax(dim=1, keepdim=False)
+    agree = pred0.eq(pred1)
+    agree = 100.*torch.mean(agree.type(torch.FloatTensor).to(output0.device))
+    return agree
+
+
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
 
 
 def evaluate_model_ff(model, data_loader, show_progress_bar=False, notebook_progress_bar=False, tta=False, imagenetA=False, imagenetO=False, imagenetR=False):
@@ -134,6 +283,7 @@ def evaluate_model_nesting(model, data_loader, show_progress_bar=False, notebook
 			unique_labels= torch.unique(target)
 			img_input = img_input.cuda(non_blocking=True)
 			logits = model(img_input); logits=torch.stack(logits, dim=0)
+			
 			if tta:
 				logits+= torch.stack(model(torch.flip(img_input, dims=[3])), dim=0)
 			# We have many logits here.... 

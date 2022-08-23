@@ -2,7 +2,7 @@
 Code to evaluate MRL models on different validation benchmarks. 
 '''
 import sys 
-sys.path.append("../") # adding root folder to the path
+sys.path.append("/gscratch/sciencehub/kmarathe/models/MRL/MRL") # adding root folder to the path
 
 import torch 
 import torchvision
@@ -11,17 +11,23 @@ from torchvision.models import *
 from torchvision import datasets
 from tqdm import tqdm
 
+#from MRL import *
+
 from MRL import *
 from imagenetv2_pytorch import ImageNetV2Dataset
 from argparse import ArgumentParser
 from utils import *
+
+
+import pdb; pdb.set_trace()
+
 
 # nesting list is by default from 8 to 2048 in powers of 2, can be modified from here.
 BATCH_SIZE = 256
 IMG_SIZE = 256
 CENTER_CROP_SIZE = 224
 NESTING_LIST=[2**i for i in range(3, 12)]
-ROOT="../" # path to validation datasets
+ROOT="/gscratch/sciencehub/kmarathe/imagenet_" # path to validation datasets
 
 parser=ArgumentParser()
 
@@ -45,6 +51,10 @@ parser.add_argument('--retrieval', default=0, help='flag for image retrieval arr
 parser.add_argument('--random_sample_dim', default=4202000, help='number of random samples to slice from retrieval database', type=int)
 parser.add_argument('--retrieval_array_path', default='', help='path to save database and query arrays for retrieval', type=str)
 
+#consistency evaluation (adopted from zhang et al)
+parser.add_argument('--consistency',action='store_true', help='Consistency evaluation')
+
+
 
 args = parser.parse_args()
 
@@ -58,7 +68,7 @@ else:
 	if args.mrl:	
 		model = load_from_old_ckpt(model, args.efficient, NESTING_LIST)
 	else:
-		model.fc=FixedFeatureLayer(args.rep_size, 1000)
+		model.fc=FixedFeatureLayer(int(args.rep_size), 1000)
 
 apply_blurpool(model)	
 model.load_state_dict(get_ckpt(args.path)) # Since our models have a torch DDP wrapper, we modify keys to exclude first 7 chars. 
@@ -93,12 +103,23 @@ if args.retrieval == 0:
 	dataloader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, num_workers=args.workers, shuffle=False)
 
 	if args.mrl:
+		breakpoint()
+		if args.consistency:
+			consistency = evaluate_consistency(model, dataloader, show_progress_bar=True, nesting_list=NESTING_LIST, tta=args.tta, imagenetA=args.dataset == 'A', imagenetR=args.dataset == 'R')
+		
 		_, top1_acc, top5_acc, total_time, num_images, m_score_dict, softmax_probs, gt, logits = evaluate_model(
-				model, dataloader, show_progress_bar=True, nesting_list=NESTING_LIST, tta=args.tta, imagenetA=args.dataset == 'A', imagenetR=args.dataset == 'R')
-	else:
-		_, top1_acc, top5_acc, total_time, num_images, m_score_dict, softmax_probs, gt, logits = evaluate_model(
-				model, dataloader, show_progress_bar=True, nesting_list=None, tta=args.tta, imagenetA=args.dataset == 'A', imagenetR=args.dataset == 'R')
+		model, dataloader, show_progress_bar=True, nesting_list=NESTING_LIST, tta=args.tta, imagenetA=args.dataset == 'A', imagenetR=args.dataset == 'R')
 
+	else:
+		breakpoint()
+		if args.consistency:
+			consistency = evaluate_consistency(model, dataloader, show_progress_bar=True, nesting_list=None, tta=args.tta, imagenetA=args.dataset == 'A', imagenetR=args.dataset == 'R')
+		
+		_, top1_acc, top5_acc, total_time, num_images, m_score_dict, softmax_probs, gt, logits = evaluate_model(
+			model, dataloader, show_progress_bar=True, nesting_list=None, tta=args.tta, imagenetA=args.dataset == 'A', imagenetR=args.dataset == 'R')
+
+
+	tqdm.write('Consistency {} images'.format(consistency))
 	tqdm.write('Evaluated {} images'.format(num_images))
 	confidence, predictions = torch.max(softmax_probs, dim=-1)
 	if args.mrl:
